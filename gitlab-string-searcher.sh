@@ -5,6 +5,7 @@ GITLAB_TOKEN=""
 GITLAB_API_URL="https://gitlab.com/api/v4"
 GROUP_ID=""
 
+STRING_TO_SEARCH='ARG BUILD_IMAGE_TAG="latest"'
 liquibase_latest_prj="liquibase_latest_prj$(date +"%Y-%m-%d_%H-%M-%S").txt"
 echo "" > "$liquibase_latest_prj"
 
@@ -38,7 +39,7 @@ while true; do
       echo "Reading Dockerfile: $dockerfile"
       
       # Capture lines containing "liquibase"
-      liquibase_lines=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id/repository/files/$dockerfile/raw?ref=$default_branch" | grep -i 'ARG BUILD_IMAGE_TAG="latest"')
+      liquibase_lines=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id/repository/files/$dockerfile/raw?ref=$default_branch" | grep -i "$STRING_TO_SEARCH")
       
       if [ -n "$liquibase_lines" ]; then
         echo "Liquibase found in project ID: $project_id, Project Name: $project_name Dockerfile: $dockerfile"
