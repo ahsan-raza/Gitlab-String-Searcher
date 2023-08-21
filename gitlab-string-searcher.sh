@@ -6,14 +6,55 @@ GITLAB_API_URL="https://gitlab.com/api/v4"
 GROUP_ID=""
 
 STRING_TO_SEARCH='ARG BUILD_IMAGE_TAG="latest"'
+LEVEL=2  # Set the number of subdirectory levels to search
+
 liquibase_latest_prj="liquibase_latest_prj$(date +"%Y-%m-%d_%H-%M-%S").txt"
 echo "" > "$liquibase_latest_prj"
 
-# number_of_pages=$(curl -s --head "$GITLAB_API_URL/groups/$GROUP_ID/projects?include_subgroups&private_token=$GITLAB_TOKEN" | grep -i x-total-pages | awk '{print $2}' | tr -d '\r\n')
-
 # Function to retrieve projects list within a specific group
 get_group_projects() {
-  curl  -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/groups/$GROUP_ID/projects?include_subgroups=true&per_page=100&page=$1"
+  curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/groups/$GROUP_ID/projects?include_subgroups=true&per_page=100&page=$1"
+}
+
+# Function to check for Liquibase in Dockerfiles
+check_dockerfile() {
+  dockerfile="$1"
+  project_id="$2"
+  project_name="$3"
+  
+  liquibase_lines=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id/repository/files/$dockerfile/raw?ref=$default_branch" | grep -i "$STRING_TO_SEARCH")
+  
+  if [ -n "$liquibase_lines" ]; then
+    echo "Liquibase found in project ID: $project_id, Project Name: $project_name Dockerfile: $dockerfile"
+    echo -e "Liquibase Latest found in project ID: $project_id, Project Name: $project_name Dockerfile: $dockerfile" >> "$liquibase_latest_prj"
+    echo "$liquibase_lines"
+  fi
+}
+
+# Function to search for string in all files within a directory (tree)
+search_string_in_tree() {
+  project_id="$1"
+  tree="$2"
+  level="$3"
+  
+  files=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id/repository/tree?path=$tree&ref=$default_branch" | jq -r '.[] | select(.type == "blob") | .path')
+  
+  for file in $files; do
+    file_contents=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id/repository/files/$file/raw?ref=$default_branch")
+    if echo "$file_contents" | grep -q "$STRING_TO_SEARCH"; then
+      echo "Found in $file"
+      check_dockerfile "$file" "$project_id" "$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id" | jq -r .name)"
+    fi
+  done
+  
+  if [ "$level" -gt 0 ]; then
+    subdirs=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id/repository/tree?path=$tree&ref=$default_branch" | jq -r '.[] | select(.type == "tree") | .path')
+  
+    for subdir in $subdirs; do
+      echo "Searching in subdirectory: $subdir"
+      search_string_in_tree "$project_id" "$subdir" "$((level-1))"
+    done
+  fi
 }
 
 # Loop through projects within the group
@@ -22,31 +63,21 @@ while true; do
   group_projects=$(get_group_projects "$page")
   
   # Exit the loop if no more projects in the group
-  if [ "$group_projects"  == "[]" ]; then
+  if [ "$group_projects" == "[]" ]; then
     break
   fi
+  
   echo -e "page number: $page\n"
+  
   project_ids=($(echo "$group_projects" | jq -r '.[].id'))
+#   default_branch=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id" | jq -r '.default_branch')
   for project_id in "${project_ids[@]}"; do
     project_name=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id" | jq -r .name)
     default_branch=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id" | jq -r '.default_branch')
-    echo "Checking project ID: $project_id in Project : $project_name"
+    echo "Checking project ID: $project_id in Project: $project_name"
     echo "Default Branch of Project: $project_name is : $default_branch"
-    # Retrieve Dockerfiles for each project within the group
-    dockerfiles=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id/repository/tree?ref=$default_branch" | jq -r '.[] | select(.type == "tree" or (.name | endswith("/")) | not) | select(.name | test("(?i)Dockerfile_Liquibase")) | .name')
-    
-    for dockerfile in $dockerfiles; do
-      echo "Reading Dockerfile: $dockerfile"
-      
-      # Capture lines containing "liquibase"
-      liquibase_lines=$(curl -s --header "PRIVATE-TOKEN: $GITLAB_TOKEN" "$GITLAB_API_URL/projects/$project_id/repository/files/$dockerfile/raw?ref=$default_branch" | grep -i "$STRING_TO_SEARCH")
-      
-      if [ -n "$liquibase_lines" ]; then
-        echo "Liquibase found in project ID: $project_id, Project Name: $project_name Dockerfile: $dockerfile"
-        echo -e "Liquibase Latest found in project ID: $project_id, Project Name: $project_name Dockerfile: $dockerfile" >> $liquibase_latest_prj
-        echo "$liquibase_lines"
-      fi
-    done
+    # Search in root level
+    search_string_in_tree "$project_id" "" "$LEVEL"
   done
   
   ((page++))
